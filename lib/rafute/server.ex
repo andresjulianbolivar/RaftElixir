@@ -23,6 +23,7 @@ defmodule Rafute.Server do
     state = %{
       me: {me, node()},
       servers: servers,
+      new_servers: [],
 
       ## TODO: persist
       current_term: 0,
@@ -190,6 +191,20 @@ defmodule Rafute.Server do
     value = state.backend.exec(command, state.backend_state)
     {:reply, {:ok, value}, :leader, state}
   end
+
+  def leader(%Command{type: :add_servers, args: servers}, _from, state) do
+    #update_servers = servers |> Enum.concat(servers)
+
+    next_index = for server <- servers, server != state.me, into: %{}, do: {server, state.log_info.last_index + 1}
+    match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
+
+    new_next_index = Map.merge(state.next_index, next_index)
+    new_match_index = Map.merge(state.match_index, match_index)
+
+    new_state = %{state | new_servers: Enum.concat(state.new_servers,servers), next_index: new_next_index, match_index: new_match_index}
+    {:reply, {:ok,Enum.concat(new_state.servers,new_state.new_servers)}, :leader, new_state}
+  end
+
   def leader(%Command{} = command, from, state) do
     index = state.log_info.last_index + 1
     entry = %Entry{command: command, index: index, term: state.current_term}
@@ -205,6 +220,12 @@ defmodule Rafute.Server do
       from: state.me
     }
     for server <- state.servers, server != state.me do
+      next_index = state.next_index[server]
+      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+      send_rpc(server, rpc)
+    end
+    for server <- state.new_servers, server != state.me do
       next_index = state.next_index[server]
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
@@ -372,7 +393,11 @@ defmodule Rafute.Server do
     send_rpc(to, %RequestVoteRPCReply{term: term, vote_granted: false, from: from})
   end
 
-  defp broadcast(rpc, state) do
+  defp broadcast(%AppendEntriesRPC{} =rpc, state) do
+    for server <- state.servers, server != state.me, do: send_rpc(server, rpc)
+    for server <- state.new_servers, server != state.me, do: send_rpc(server, rpc)
+  end
+  defp broadcast(%RequestVoteRPC{} =rpc, state) do
     for server <- state.servers, server != state.me, do: send_rpc(server, rpc)
   end
 
