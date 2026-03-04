@@ -6,11 +6,11 @@ defmodule Rafute.Supervisor do
   end
 
   def init([]) do
-    supervise([], strategy: :one_for_one)
+    Supervisor.init([], strategy: :one_for_one)
   end
 
   def start_server(name, servers) do
-    child = worker(Rafute.Server, [name, servers], id: name)
+    child = %{id: name, start: {Rafute.Server, :start_link, [name, servers]}, restart: :permanent, shutdown: 5000, type: :worker}
     Supervisor.start_child(__MODULE__, child)
   end
 end
