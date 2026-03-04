@@ -27,6 +27,25 @@ defmodule Rafute.Client do
     servers |> Enum.map(&fullname/1) |> Rafute.create_cluster()
   end
 
+  def add_servers(server, servers) do
+    servers = servers |> Enum.map(&fullname/1)
+    case server |> fullname() |> :gen_fsm.sync_send_event(%Command{type: :add_servers, args: servers}) do
+      {:ok, all_servers} ->
+            for server <- servers do
+              case server do
+                {name, n} when n == node() ->
+                  Rafute.Supervisor.start_server(name, all_servers)
+                {name, n} ->
+                  :rpc.call(n, Rafute.Supervisor, :start_server, [name, all_servers])
+              end
+            end
+      {:error, {:redirect, leader}} ->
+        add_servers(leader, servers)
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp fullname(server) when is_atom(server), do: {server, node()}
   defp fullname({_, _} = server), do: server
 end
