@@ -193,7 +193,6 @@ defmodule Rafute.Server do
   end
 
   def leader(%Command{type: :add_servers, args: servers}, _from, state) do
-    #update_servers = servers |> Enum.concat(servers)
 
     next_index = for server <- servers, server != state.me, into: %{}, do: {server, state.log_info.last_index + 1}
     match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
@@ -357,7 +356,7 @@ defmodule Rafute.Server do
   end
 
   defp become_follower(term, state) do
-    state = %{state|current_term: term, voted_for: nil}
+    state = %{state|current_term: term, voted_for: nil, new_servers: []}
     state = set_election_timer(state)
     state
   end
