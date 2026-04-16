@@ -9,9 +9,9 @@ defmodule Rafute do
     for server <- servers do
       case server do
         {name, n} when n == node() ->
-            Rafute.Supervisor.start_server(name, servers)
+            Rafute.Supervisor.start_server(name, servers, :normal)
         {name, n} ->
-            :rpc.call(n, Rafute.Supervisor, :start_server, [name, servers])
+            :rpc.call(n, Rafute.Supervisor, :start_server, [name, servers, :normal])
       end
     end
     :ok

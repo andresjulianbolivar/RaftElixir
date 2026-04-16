@@ -12,11 +12,11 @@ defmodule Rafute.Server do
     Command
   }
 
-  def start_link(name, servers) do
-    :gen_fsm.start_link({:local, name}, __MODULE__, [name, servers], [])
+  def start_link(name, servers, mode) do
+    :gen_fsm.start_link({:local, name}, __MODULE__, [name, servers, mode], [])
   end
 
-  def init([me, servers]) do
+  def init([me, servers, mode]) do
     ## TODO: other backends
     ## TODO: backend_sup
     {backend, backend_state} = Rafute.Backend.Agent.start_link
@@ -24,6 +24,11 @@ defmodule Rafute.Server do
       me: {me, node()},
       servers: servers,
       new_servers: [],
+
+      new_next_index: %{},
+      new_match_index: %{},
+
+      joint_started: false,
 
       ## TODO: persist
       current_term: 0,
@@ -47,7 +52,17 @@ defmodule Rafute.Server do
       client_index: %{},
     }
     state = set_election_timer(state)
-    {:ok, :follower, state}
+    case mode do
+      :normal ->
+        {:ok, :follower, state}
+      :learner ->
+         {:ok, :learner, state}
+    end
+  end
+
+  def learner(:election_timeout, state) do
+    Logger.debug("#{elem(state.me, 0)}: turn off because leader is down")
+    {:stop, :leader_down, state}
   end
 
   def follower(:election_timeout, state) do
@@ -65,6 +80,11 @@ defmodule Rafute.Server do
   end
 
   def follower(%Command{}, _from, state) do
+    reply = {:error, {:redirect, state.leader}}
+    {:reply, reply, :follower, state}
+  end
+
+  def follower({:add_servers,_servers},_from,state) do
     reply = {:error, {:redirect, state.leader}}
     {:reply, reply, :follower, state}
   end
@@ -131,6 +151,35 @@ defmodule Rafute.Server do
     state = set_heartbeat_timer(state)
     {:next_state, :leader, state}
   end
+
+  def leader({:add_servers, servers},_from, state) do
+    new_next_index = for server <- servers, server != state.me, into: %{}, do: {server, state.log_info.last_index + 1}
+    new_match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
+
+    state = %{state | new_servers: Enum.concat(state.new_servers,servers), new_next_index: new_next_index, new_match_index: new_match_index}
+    rpc = {:copy_log, servers}
+    send_rpc(state.me,rpc)
+    {:reply, {:ok,Enum.concat(state.servers,state.new_servers)}, :leader, state}
+  end
+
+  def leader({:copy_log, servers}, state) do
+    Logger.debug("#{elem(state.me, 0)}: start copying logs to new servers")
+    rpc = %AppendEntriesRPC{
+      term: state.current_term,
+      leader_id: state.me,
+      leader_commit: state.commit_index,
+      from: state.me
+    }
+    for server <- servers, server != state.me do
+      next_index = state.new_next_index[server]
+      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+      send_rpc(server, rpc)
+    end
+    state = set_heartbeat_timer(state)
+    {:next_state, :leader, state}
+  end
+
   def leader(%RequestVoteRPC{term: term} = rpc, %{current_term: current_term} = state) when term > current_term do
     handle_request_vote(:leader, rpc, state)
   end
@@ -192,18 +241,6 @@ defmodule Rafute.Server do
     {:reply, {:ok, value}, :leader, state}
   end
 
-  def leader(%Command{type: :add_servers, args: servers}, _from, state) do
-
-    next_index = for server <- servers, server != state.me, into: %{}, do: {server, state.log_info.last_index + 1}
-    match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
-
-    new_next_index = Map.merge(state.next_index, next_index)
-    new_match_index = Map.merge(state.match_index, match_index)
-
-    new_state = %{state | new_servers: Enum.concat(state.new_servers,servers), next_index: new_next_index, match_index: new_match_index}
-    {:reply, {:ok,Enum.concat(new_state.servers,new_state.new_servers)}, :leader, new_state}
-  end
-
   def leader(%Command{} = command, from, state) do
     index = state.log_info.last_index + 1
     entry = %Entry{command: command, index: index, term: state.current_term}
@@ -219,12 +256,6 @@ defmodule Rafute.Server do
       from: state.me
     }
     for server <- state.servers, server != state.me do
-      next_index = state.next_index[server]
-      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
-      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
-      send_rpc(server, rpc)
-    end
-    for server <- state.new_servers, server != state.me do
       next_index = state.next_index[server]
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
@@ -356,7 +387,7 @@ defmodule Rafute.Server do
   end
 
   defp become_follower(term, state) do
-    state = %{state|current_term: term, voted_for: nil, new_servers: []}
+    state = %{state|current_term: term, voted_for: nil, new_servers: [], new_next_index: %{}, new_match_index: %{}}
     state = set_election_timer(state)
     state
   end

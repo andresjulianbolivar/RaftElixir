@@ -29,16 +29,17 @@ defmodule Rafute.Client do
 
   def add_servers(server, servers) do
     servers = servers |> Enum.map(&fullname/1)
-    case server |> fullname() |> :gen_fsm.sync_send_event(%Command{type: :add_servers, args: servers}) do
+    case server |> fullname() |> :gen_fsm.sync_send_event({:add_servers, servers}) do
       {:ok, all_servers} ->
             for server <- servers do
               case server do
                 {name, n} when n == node() ->
-                  Rafute.Supervisor.start_server(name, all_servers)
+                  Rafute.Supervisor.start_server(name, all_servers, :learner)
                 {name, n} ->
-                  :rpc.call(n, Rafute.Supervisor, :start_server, [name, all_servers])
+                  :rpc.call(n, Rafute.Supervisor, :start_server, [name, all_servers, :learner])
               end
             end
+            :ok
       {:error, {:redirect, leader}} ->
         add_servers(leader, servers)
       {:error, reason} ->
