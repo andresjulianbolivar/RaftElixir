@@ -52,17 +52,18 @@ defmodule Rafute.Server do
       client_index: %{},
     }
     state = set_election_timer(state)
-    case mode do
-      :normal ->
-        {:ok, :follower, state}
-      :learner ->
-         {:ok, :learner, state}
-    end
+    {:ok, mode, state}
   end
 
   def learner(:election_timeout, state) do
     Logger.debug("#{elem(state.me, 0)}: turn off because leader is down")
     {:stop, :leader_down, state}
+  end
+  def learner(%AppendEntriesRPC{} = rpc, state) do
+    handle_append_entries(:learner, rpc, state, :learner)
+  end
+  def learner(_message, state) do
+    {:next_state, :learner, state}
   end
 
   def follower(:election_timeout, state) do
@@ -73,7 +74,7 @@ defmodule Rafute.Server do
     handle_request_vote(:follower, rpc, state)
   end
   def follower(%AppendEntriesRPC{} = rpc, state) do
-    handle_append_entries(:follower, rpc, state)
+    handle_append_entries(:follower, rpc, state, :follower)
   end
   def follower(_message, state) do
     {:next_state, :follower, state}
@@ -127,7 +128,7 @@ defmodule Rafute.Server do
     end
   end
   def candidate(%AppendEntriesRPC{} = rpc, state) do
-    handle_append_entries(:candidate, rpc, state)
+    handle_append_entries(:candidate, rpc, state, :follower)
   end
   def candidate(_message, state) do
     {:next_state, :candidate, state}
@@ -191,7 +192,7 @@ defmodule Rafute.Server do
     raise "Duplicated leader #{from} and #{leader}"
   end
   def leader(%AppendEntriesRPC{} = rpc, state) do
-    handle_append_entries(:leader, rpc, state)
+    handle_append_entries(:leader, rpc, state, :follower)
   end
   def leader(%AppendEntriesRPCReply{term: term}, %{current_term: current_term} = state) when term > current_term do
     state = become_follower(term, state)
@@ -311,11 +312,11 @@ defmodule Rafute.Server do
   end
 
   defp handle_append_entries(state_name, %AppendEntriesRPC{term: term} = rpc,
-                             %{current_term: current_term} = state) when term < current_term do
+                             %{current_term: current_term} = state, _mode) when term < current_term do
     send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: false, from: state.me})
     {:next_state, state_name, state}
   end
-  defp handle_append_entries(_, rpc, state) do
+  defp handle_append_entries(_, rpc, state, mode) do
     state = become_follower(rpc.term, state)
     state = %{state | leader: rpc.from}
     if check_log(rpc.prev_log_index, rpc.prev_log_term, state) do
@@ -323,10 +324,10 @@ defmodule Rafute.Server do
       state = commit_logs(:follower, rpc.leader_commit, state)
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: true, index:
                                                 state.log_info.last_index, from: state.me})
-      {:next_state, :follower, state}
+      {:next_state, mode, state}
     else
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: false, from: state.me})
-      {:next_state, :follower, state}
+      {:next_state, mode, state}
     end
   end
 
