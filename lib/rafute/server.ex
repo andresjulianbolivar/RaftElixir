@@ -222,21 +222,30 @@ defmodule Rafute.Server do
     {:next_state, :leader, state}
   end
   def leader(%AppendEntriesRPCReply{from: from, index: index, success: true}, state) do
-    state =
-      state
-      |> put_in([:match_index, from], index)
-      |> put_in([:next_index, from], index + 1)
-    commitable_index =
-      state.commit_index
-      |> Stream.iterate(&(&1 + 1))
-      |> Enum.find_value(fn(index) ->
-            ## including me
-            count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
-            count <= (state.servers |> length() |> div(2)) && index
-         end)
-      |> (&(&1 - 1)).()
-    state = commit_logs(:leader, commitable_index, state)
-    {:next_state, :leader, state}
+    from_learner = Enum.member?(state.new_servers,from)
+    if from_learner do
+      state =
+        state
+        |> put_in([:new_match_index, from], index)
+        |> put_in([:new_next_index, from], index + 1)
+      {:next_state, :leader, state}
+    else
+      state =
+        state
+        |> put_in([:match_index, from], index)
+        |> put_in([:next_index, from], index + 1)
+      commitable_index =
+        state.commit_index
+        |> Stream.iterate(&(&1 + 1))
+        |> Enum.find_value(fn(index) ->
+              ## including me
+              count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+              count <= (state.servers |> length() |> div(2)) && index
+          end)
+        |> (&(&1 - 1)).()
+      state = commit_logs(:leader, commitable_index, state)
+      {:next_state, :leader, state}
+    end
   end
   def leader(_message, state) do
     {:next_state, :leader, state}
