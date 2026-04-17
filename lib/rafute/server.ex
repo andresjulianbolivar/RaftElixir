@@ -183,8 +183,8 @@ defmodule Rafute.Server do
     }
     for server <- servers, server != state.me do
       next_index = state.new_next_index[server]
-      Logger.debug("Next_index #{next_index}")
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+      Logger.debug("#{inspect(entries)}")
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
       send_rpc(server, rpc)
     end
@@ -379,7 +379,7 @@ defmodule Rafute.Server do
   end
   defp append_entries([%Entry{index: index}|_] = entries, state) do
     logs = Enum.drop_while(state.logs, &(&1.index >= index))
-    [%Entry{index: index, term: term}|_] = logs = Enum.reverse(entries) ++ logs
+    [%Entry{index: index, term: term}|_] = logs = entries ++ logs
     %{state | logs: logs, log_info: %{last_index: index, last_term: term}}
   end
 
