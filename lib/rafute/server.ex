@@ -52,7 +52,12 @@ defmodule Rafute.Server do
       client_index: %{},
     }
     state = set_election_timer(state)
-    {:ok, mode, state}
+    case mode do
+      :normal ->
+        {:ok, :follower, state}
+      :learner ->
+        {:ok, :learner, state}
+    end
   end
 
   def learner(:election_timeout, state) do
