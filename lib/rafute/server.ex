@@ -159,13 +159,18 @@ defmodule Rafute.Server do
   end
 
   def leader({:add_servers, servers},_from, state) do
-    new_next_index = for server <- servers, server != state.me, into: %{}, do: {server, state.log_info.last_index + 1}
-    new_match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
+    exists = Enum.any?(servers, &(&1 in state.servers))
+    if exists do
+      {:reply, {:error, {:server_already_exists}}, :leader, state}
+    else
+      new_next_index = for server <- servers, server != state.me, into: %{}, do: {server, 1}
+      new_match_index = for server <- servers, server != state.me, into: %{}, do: {server, 0}
 
-    state = %{state | new_servers: Enum.concat(state.new_servers,servers), new_next_index: new_next_index, new_match_index: new_match_index}
-    rpc = {:copy_log, servers}
-    send_rpc(state.me,rpc)
-    {:reply, {:ok,Enum.concat(state.servers,state.new_servers)}, :leader, state}
+      state = %{state | new_servers: Enum.concat(state.new_servers,servers), new_next_index: new_next_index, new_match_index: new_match_index}
+      rpc = {:copy_log, servers}
+      send_rpc(state.me,rpc)
+      {:reply, {:ok,Enum.concat(state.servers,state.new_servers)}, :leader, state}
+    end
   end
 
   def leader({:copy_log, servers}, state) do
@@ -178,11 +183,17 @@ defmodule Rafute.Server do
     }
     for server <- servers, server != state.me do
       next_index = state.new_next_index[server]
+      Logger.debug("Next_index #{next_index}")
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
       send_rpc(server, rpc)
     end
     state = set_heartbeat_timer(state)
+    {:next_state, :leader, state}
+  end
+
+  def leader({:joint_consensus}, state) do
+    Logger.debug("#{elem(state.me, 0)}: start joint consensus")
     {:next_state, :leader, state}
   end
 
@@ -223,12 +234,21 @@ defmodule Rafute.Server do
   end
   def leader(%AppendEntriesRPCReply{from: from, index: index, success: true}, state) do
     from_learner = Enum.member?(state.new_servers,from)
-    if from_learner do
+    if from_learner and length(state.new_servers) > 0 do
       state =
         state
         |> put_in([:new_match_index, from], index)
         |> put_in([:new_next_index, from], index + 1)
-      {:next_state, :leader, state}
+
+      joint_consensus = Enum.all?(state.new_match_index, fn({_, mi}) -> mi == state.log_info.last_index end)
+      if joint_consensus && not state.joint_started do
+        state = %{state | joint_started: true}
+        rpc = {:joint_consensus}
+        send_rpc(state.me, rpc)
+        {:next_state, :leader, state}
+      else
+        {:next_state, :leader, state}
+      end
     else
       state =
         state
