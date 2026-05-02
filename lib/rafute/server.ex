@@ -169,7 +169,7 @@ defmodule Rafute.Server do
       state = %{state | new_servers: Enum.concat(state.new_servers,servers), new_next_index: new_next_index, new_match_index: new_match_index}
       rpc = {:copy_log, servers}
       send_rpc(state.me,rpc)
-      {:reply, {:ok,Enum.concat(state.servers,state.new_servers)}, :leader, state}
+      {:reply, :ok, :leader, state}
     end
   end
 
