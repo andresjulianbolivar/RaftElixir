@@ -44,6 +44,7 @@ defmodule Rafute.Server do
       match_index: %{},
 
       votes: MapSet.new(),
+      votes_new: MapSet.new(),
       election_timer_ref: nil,
       heartbeat_timer_ref: nil,
       leader: nil,
@@ -125,13 +126,40 @@ defmodule Rafute.Server do
     {:next_state, :follower, state}
   end
   def candidate(%RequestVoteRPCReply{vote_granted: true, from: from}, state) do
-    votes = MapSet.put(state.votes, from)
-    ## including me
-    if (MapSet.size(votes) + 1) > (state.servers |> length() |> div(2)) do
-      state = become_leader(state)
-      {:next_state, :leader, state}
+    if state.c_old_new do
+      new = Enum.member?(state.new_servers, from)
+      if new do
+        votes = MapSet.put(state.votes_new, from)
+        ## including me
+        count_old = MapSet.size(state.votes) + 1
+        count_new = count_old + MapSet.size(votes)
+        if count_old > (state.servers |> length() |> div(2)) and count_new > (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) do
+          state = become_leader(state)
+          {:next_state, :leader, state}
+        else
+          {:next_state, :candidate, %{state|votes_new: votes}}
+        end
+      else
+        votes = MapSet.put(state.votes, from)
+        ## including me
+        count_old = MapSet.size(votes) + 1
+        count_new = count_old + MapSet.size(state.votes_new)
+        if count_old > (state.servers |> length() |> div(2)) and count_new > (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) do
+          state = become_leader(state)
+          {:next_state, :leader, state}
+        else
+          {:next_state, :candidate, %{state|votes: votes}}
+        end
+      end
     else
-      {:next_state, :candidate, %{state|votes: votes}}
+      votes = MapSet.put(state.votes, from)
+      ## including me
+      if (MapSet.size(votes) + 1) > (state.servers |> length() |> div(2)) do
+        state = become_leader(state)
+        {:next_state, :leader, state}
+      else
+        {:next_state, :candidate, %{state|votes: votes}}
+      end
     end
   end
   def candidate(%AppendEntriesRPC{} = rpc, state) do
@@ -489,7 +517,7 @@ defmodule Rafute.Server do
   end
 
   defp become_candidate(state) do
-    state = %{state|current_term: state.current_term + 1, votes: MapSet.new()}
+    state = %{state|current_term: state.current_term + 1, votes: MapSet.new(), votes: MapSet.new()}
     rpc = %RequestVoteRPC{
       term: state.current_term,
       candidate_id: state.me,

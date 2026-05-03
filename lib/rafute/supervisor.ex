@@ -12,7 +12,7 @@ defmodule Rafute.Supervisor do
   def start_server(name, servers, mode) do
     case mode do
       :normal ->
-        child = %{id: name, start: {Rafute.Server, :start_link, [name, servers, mode]}, restart: :permanent, shutdown: 5000, type: :worker}
+        child = %{id: name, start: {Rafute.Server, :start_link, [name, servers, mode]}, restart: :temporary, shutdown: 5000, type: :worker}
         Supervisor.start_child(__MODULE__, child)
       :learner ->
         child = %{id: name, start: {Rafute.Server, :start_link, [name, servers, mode]}, restart: :temporary, shutdown: 5000, type: :worker}
