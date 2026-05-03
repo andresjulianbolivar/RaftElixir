@@ -267,7 +267,7 @@ defmodule Rafute.Server do
   end
   def leader(%AppendEntriesRPCReply{from: from, index: index, success: true}, state) do
     from_learner = Enum.member?(state.new_servers,from)
-    if from_learner and length(state.new_servers) > 0 do
+    if from_learner and length(state.new_servers) > 0 and not state.c_old_new do
       state =
         state
         |> put_in([:new_match_index, from], index)
@@ -391,7 +391,12 @@ defmodule Rafute.Server do
       state = commit_logs(:follower, rpc.leader_commit, state)
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: true, index:
                                                 state.log_info.last_index, from: state.me})
-      {:next_state, mode, state}
+      entry = Enum.find(rpc.entries, fn(entry)-> entry.command.type == :c_old_new end)
+      if entry do
+        {:next_state, :follower, state}
+      else
+        {:next_state, mode, state}
+      end
     else
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: false, from: state.me})
       {:next_state, mode, state}
@@ -413,7 +418,6 @@ defmodule Rafute.Server do
   defp append_entries([%Entry{index: index}|_] = entries, state) do
     entry = Enum.find(entries, fn(entry)-> entry.command.type == :c_old_new end)
     if entry do
-      Logger.debug("#{inspect(entry.command.args)}")
       {old_servers, new_servers} = entry.command.args
       state = %{state | servers: old_servers, new_servers: new_servers, c_old_new: true, c_old_new_index: entry.index}
       logs = Enum.drop_while(state.logs, &(&1.index >= index))
