@@ -29,6 +29,8 @@ defmodule Rafute.Server do
       new_match_index: %{},
 
       joint_started: false,
+      c_old_new: false,
+      c_old_new_index: nil,
 
       ## TODO: persist
       current_term: 0,
@@ -222,6 +224,12 @@ defmodule Rafute.Server do
     {:next_state, :leader, state}
   end
 
+  def leader({:finish_joint_consensus}, state) do
+    Logger.debug("#{elem(state.me, 0)}: finish joint consensus")
+    state = set_heartbeat_timer(state)
+    {:next_state, :leader, state}
+  end
+
   def leader(%RequestVoteRPC{term: term} = rpc, %{current_term: current_term} = state) when term > current_term do
     handle_request_vote(:leader, rpc, state)
   end
@@ -403,9 +411,19 @@ defmodule Rafute.Server do
     state
   end
   defp append_entries([%Entry{index: index}|_] = entries, state) do
-    logs = Enum.drop_while(state.logs, &(&1.index >= index))
-    [%Entry{index: index, term: term}|_] = logs = entries ++ logs
-    %{state | logs: logs, log_info: %{last_index: index, last_term: term}}
+    entry = Enum.find(entries, fn(entry)-> entry.command.type == :c_old_new end)
+    if entry do
+      Logger.debug("#{inspect(entry.command.args)}")
+      {old_servers, new_servers} = entry.command.args
+      state = %{state | servers: old_servers, new_servers: new_servers, c_old_new: true, c_old_new_index: entry.index}
+      logs = Enum.drop_while(state.logs, &(&1.index >= index))
+      [%Entry{index: index, term: term}|_] = logs = entries ++ logs
+      %{state | logs: logs, log_info: %{last_index: index, last_term: term}}
+    else
+      logs = Enum.drop_while(state.logs, &(&1.index >= index))
+      [%Entry{index: index, term: term}|_] = logs = entries ++ logs
+      %{state | logs: logs, log_info: %{last_index: index, last_term: term}}
+    end
   end
 
   ## TODO: Ragute.Log.get_entries_from
@@ -436,6 +454,12 @@ defmodule Rafute.Server do
            entry.index
          end)
     client_index = Enum.reduce(indexes, state.client_index, fn(index, acc) -> Map.delete(acc, index) end)
+    if state.c_old_new_index do
+      if index >= state.c_old_new_index do
+        rpc = {:finish_joint_consensus}
+        :gen_fsm.send_event_after(0, rpc)
+      end
+    end
     %{state | commit_index: index, client_index: client_index}
   end
   defp commit_logs(_, index, state) do
@@ -449,7 +473,7 @@ defmodule Rafute.Server do
   end
 
   defp become_follower(term, state) do
-    state = %{state|current_term: term, voted_for: nil, new_servers: [], new_next_index: %{}, new_match_index: %{}}
+    state = %{state|current_term: term, voted_for: nil}
     state = set_election_timer(state)
     state
   end
