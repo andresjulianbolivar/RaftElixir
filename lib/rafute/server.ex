@@ -31,6 +31,8 @@ defmodule Rafute.Server do
       joint_started: false,
       c_old_new: false,
       c_old_new_index: nil,
+      copy_index: 0,
+      new_copy_index: 0,
 
       ## TODO: persist
       current_term: 0,
@@ -205,6 +207,7 @@ defmodule Rafute.Server do
 
   def leader({:copy_log, servers}, state) do
     Logger.debug("#{elem(state.me, 0)}: start copying logs to new servers")
+    state = %{state | copy_index: state.commit_index}
     rpc = %AppendEntriesRPC{
       term: state.current_term,
       leader_id: state.me,
@@ -221,35 +224,48 @@ defmodule Rafute.Server do
     {:next_state, :leader, state}
   end
 
-  def leader({:joint_consensus}, state) do
-    Logger.debug("#{elem(state.me, 0)}: start joint consensus")
-    index = state.log_info.last_index + 1
-    entry = %Entry{command: %Command{type: :c_old_new, args: {state.servers, state.new_servers}}, index: index, term: state.current_term}
-    state =
-      state
-      |> put_in([:log_info, :last_index], index)
-      |> put_in([:client_index, index], nil)
-    state = append_entries([entry], state, entry)
-    rpc = %AppendEntriesRPC{
-      term: state.current_term,
-      leader_id: state.me,
-      leader_commit: state.commit_index,
-      from: state.me
-    }
-    for server <- state.servers, server != state.me do
-      next_index = state.next_index[server]
-      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
-      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
-      send_rpc(server, rpc)
+  def leader({:joint_consensus, index}, state) do
+    if index >= state.copy_index do
+      new_copy_index = state.new_copy_index + 1
+      if new_copy_index == length(state.new_servers) do
+        Logger.debug("#{elem(state.me, 0)}: start joint consensus")
+        index = state.log_info.last_index + 1
+        entry = %Entry{command: %Command{type: :c_old_new, args: {state.servers, state.new_servers}}, index: index, term: state.current_term}
+        state =
+          state
+          |> put_in([:log_info, :last_index], index)
+          |> put_in([:client_index, index], nil)
+        state = append_entries([entry], state, entry)
+        rpc = %AppendEntriesRPC{
+          term: state.current_term,
+          leader_id: state.me,
+          leader_commit: state.commit_index,
+          from: state.me
+        }
+        for server <- state.servers, server != state.me do
+          next_index = state.next_index[server]
+          {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+          rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+          send_rpc(server, rpc)
+        end
+        for server <- state.new_servers, server != state.me do
+          next_index = state.new_next_index[server]
+          {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+          rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+          send_rpc(server, rpc)
+        end
+        state = %{state | copy_index: 0, new_copy_index: 0}
+        Process.sleep(1000)
+        state = set_heartbeat_timer(state)
+        {:next_state, :leader, state}
+      else
+        state = %{state | new_copy_index: new_copy_index}
+        {:next_state, :leader, state}
+      end
+    else
+      state = set_heartbeat_timer(state)
+      {:next_state, :leader, state}
     end
-    for server <- state.new_servers, server != state.me do
-      next_index = state.new_next_index[server]
-      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
-      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
-      send_rpc(server, rpc)
-    end
-    state = set_heartbeat_timer(state)
-    {:next_state, :leader, state}
   end
 
   def leader({:finish_joint_consensus}, state) do
@@ -424,7 +440,7 @@ defmodule Rafute.Server do
     if check_log(rpc.prev_log_index, rpc.prev_log_term, state) do
       entry = Enum.find(rpc.entries, fn(entry)-> entry.command.type == :c_old_new end)
       state = append_entries(rpc.entries, state, entry)
-      state = commit_logs(:follower, rpc.leader_commit, state)
+      state = commit_logs(mode, rpc.leader_commit, state)
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: true, index:
                                                 state.log_info.last_index, from: state.me})
       if entry do
@@ -500,6 +516,17 @@ defmodule Rafute.Server do
     end
     %{state | commit_index: index, client_index: client_index}
   end
+  defp commit_logs(:learner, index, state) do
+    Logger.debug("#{elem(state.me, 0)}: commit logs #{index}")
+    state.logs
+    |> Enum.drop_while(&(&1.index > index))
+    |> Enum.take_while(&(&1.index >= state.commit_index))
+    |> Enum.reverse
+    |> Enum.each(&state.backend.exec(&1.command, state.backend_state))
+    rpc = {:joint_consensus, index}
+    send_rpc(state.leader, rpc)
+    %{state | commit_index: index}
+  end
   defp commit_logs(_, index, state) do
     Logger.debug("#{elem(state.me, 0)}: commit logs #{index}")
     state.logs
@@ -553,6 +580,9 @@ defmodule Rafute.Server do
   end
   defp broadcast(%RequestVoteRPC{} =rpc, state) do
     for server <- state.servers, server != state.me, do: send_rpc(server, rpc)
+    if state.c_old_new do
+      for server <- state.new_servers, server != state.me, do: send_rpc(server, rpc)
+    end
   end
 
   defp send_rpc(to, message) do
