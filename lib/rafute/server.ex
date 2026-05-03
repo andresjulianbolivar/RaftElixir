@@ -184,7 +184,6 @@ defmodule Rafute.Server do
     for server <- servers, server != state.me do
       next_index = state.new_next_index[server]
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
-      Logger.debug("#{inspect(entries)}")
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
       send_rpc(server, rpc)
     end
