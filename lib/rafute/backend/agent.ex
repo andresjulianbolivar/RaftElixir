@@ -13,4 +13,8 @@ defmodule Rafute.Backend.Agent do
   def exec(%Command{type: :write, args: {key, value}}, pid) do
     Agent.update(pid, &Map.put(&1, key, value))
   end
+
+  def exec(%Command{type: :c_old_new, args: {_servers, _new_servers}}, _pid) do
+    :ok
+  end
 end

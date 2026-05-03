@@ -193,6 +193,32 @@ defmodule Rafute.Server do
 
   def leader({:joint_consensus}, state) do
     Logger.debug("#{elem(state.me, 0)}: start joint consensus")
+    index = state.log_info.last_index + 1
+    entry = %Entry{command: %Command{type: :c_old_new, args: {state.servers, state.new_servers}}, index: index, term: state.current_term}
+    state =
+      state
+      |> put_in([:log_info, :last_index], index)
+      |> put_in([:client_index, index], nil)
+    state = append_entries([entry], state)
+    rpc = %AppendEntriesRPC{
+      term: state.current_term,
+      leader_id: state.me,
+      leader_commit: state.commit_index,
+      from: state.me
+    }
+    for server <- state.servers, server != state.me do
+      next_index = state.next_index[server]
+      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+      send_rpc(server, rpc)
+    end
+    for server <- state.new_servers, server != state.me do
+      next_index = state.new_next_index[server]
+      {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+      rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+      send_rpc(server, rpc)
+    end
+    state = set_heartbeat_timer(state)
     {:next_state, :leader, state}
   end
 
@@ -396,7 +422,7 @@ defmodule Rafute.Server do
     state
   end
   defp commit_logs(:leader, index, state) do
-    Logger.debug("#{elem(state.me, 0)}: commit logs")
+    Logger.debug("#{elem(state.me, 0)}: commit logs #{index}")
     indexes =
       state.logs
       |> Enum.drop_while(&(&1.index > index))
@@ -404,14 +430,16 @@ defmodule Rafute.Server do
       |> Enum.reverse
       |> Enum.map(fn(entry) ->
            state.backend.exec(entry.command, state.backend_state)
-           :gen_fsm.reply(state.client_index[entry.index], :ok)
+           if state.client_index[entry.index] do
+            :gen_fsm.reply(state.client_index[entry.index], :ok)
+           end
            entry.index
          end)
     client_index = Enum.reduce(indexes, state.client_index, fn(index, acc) -> Map.delete(acc, index) end)
     %{state | commit_index: index, client_index: client_index}
   end
   defp commit_logs(_, index, state) do
-    Logger.debug("#{elem(state.me, 0)}: commit logs")
+    Logger.debug("#{elem(state.me, 0)}: commit logs #{index}")
     state.logs
     |> Enum.drop_while(&(&1.index > index))
     |> Enum.take_while(&(&1.index >= state.commit_index))
