@@ -201,7 +201,7 @@ defmodule Rafute.Server do
       state
       |> put_in([:log_info, :last_index], index)
       |> put_in([:client_index, index], nil)
-    state = append_entries([entry], state)
+    state = append_entries([entry], state, entry)
     rpc = %AppendEntriesRPC{
       term: state.current_term,
       leader_id: state.me,
@@ -291,9 +291,16 @@ defmodule Rafute.Server do
         state.commit_index
         |> Stream.iterate(&(&1 + 1))
         |> Enum.find_value(fn(index) ->
-              ## including me
-              count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
-              count <= (state.servers |> length() |> div(2)) && index
+              if state.c_old_new do
+                ## including me
+                count_old = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                count_new = count_old + Enum.count(state.new_match_index, fn({_, mi}) -> mi >= index end)
+                count_old <= (state.servers |> length() |> div(2)) && count_new <= (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) && index
+              else
+                ## including me
+                count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                count <= (state.servers |> length() |> div(2)) && index
+              end
           end)
         |> (&(&1 - 1)).()
       state = commit_logs(:leader, commitable_index, state)
@@ -316,7 +323,7 @@ defmodule Rafute.Server do
       state
       |> put_in([:log_info, :last_index], index)
       |> put_in([:client_index, index], from)
-    state = append_entries([entry], state)
+    state = append_entries([entry], state, nil)
     rpc = %AppendEntriesRPC{
       term: state.current_term,
       leader_id: state.me,
@@ -387,11 +394,11 @@ defmodule Rafute.Server do
     state = become_follower(rpc.term, state)
     state = %{state | leader: rpc.from}
     if check_log(rpc.prev_log_index, rpc.prev_log_term, state) do
-      state = append_entries(rpc.entries, state)
+      entry = Enum.find(rpc.entries, fn(entry)-> entry.command.type == :c_old_new end)
+      state = append_entries(rpc.entries, state, entry)
       state = commit_logs(:follower, rpc.leader_commit, state)
       send_rpc(rpc.from, %AppendEntriesRPCReply{term: state.current_term, success: true, index:
                                                 state.log_info.last_index, from: state.me})
-      entry = Enum.find(rpc.entries, fn(entry)-> entry.command.type == :c_old_new end)
       if entry do
         {:next_state, :follower, state}
       else
@@ -412,11 +419,10 @@ defmodule Rafute.Server do
   end
 
   ## TODO: Ragute.Log.append_entries/2
-  defp append_entries([], state) do
+  defp append_entries([], state,_entry) do
     state
   end
-  defp append_entries([%Entry{index: index}|_] = entries, state) do
-    entry = Enum.find(entries, fn(entry)-> entry.command.type == :c_old_new end)
+  defp append_entries([%Entry{index: index}|_] = entries, state, entry) do
     if entry do
       {old_servers, new_servers} = entry.command.args
       state = %{state | servers: old_servers, new_servers: new_servers, c_old_new: true, c_old_new_index: entry.index}
