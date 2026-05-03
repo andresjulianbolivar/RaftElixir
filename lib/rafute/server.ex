@@ -168,7 +168,7 @@ defmodule Rafute.Server do
 
       state = %{state | new_servers: Enum.concat(state.new_servers,servers), new_next_index: new_next_index, new_match_index: new_match_index}
       rpc = {:copy_log, servers}
-      send_rpc(state.me,rpc)
+      :gen_fsm.send_event_after(0, rpc)
       {:reply, :ok, :leader, state}
     end
   end
@@ -243,7 +243,7 @@ defmodule Rafute.Server do
       if joint_consensus && not state.joint_started do
         state = %{state | joint_started: true}
         rpc = {:joint_consensus}
-        send_rpc(state.me, rpc)
+        :gen_fsm.send_event_after(0, rpc)
         {:next_state, :leader, state}
       else
         {:next_state, :leader, state}
