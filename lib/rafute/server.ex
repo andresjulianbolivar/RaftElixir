@@ -316,39 +316,55 @@ defmodule Rafute.Server do
         state
         |> put_in([:new_match_index, from], index)
         |> put_in([:new_next_index, from], index + 1)
-
-      joint_consensus = Enum.all?(state.new_match_index, fn({_, mi}) -> mi == state.log_info.last_index end)
-      if joint_consensus && not state.joint_started do
-        state = %{state | joint_started: true}
-        rpc = {:joint_consensus}
-        :gen_fsm.send_event_after(0, rpc)
+      {:next_state, :leader, state}
+    else
+      if from_learner and length(state.new_servers) > 0 do
+        state =
+          state
+          |> put_in([:match_index, from], index)
+          |> put_in([:next_index, from], index + 1)
+        commitable_index =
+          state.commit_index
+          |> Stream.iterate(&(&1 + 1))
+          |> Enum.find_value(fn(index) ->
+                if state.c_old_new do
+                  ## including me
+                  count_old = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                  count_new = count_old + Enum.count(state.new_match_index, fn({_, mi}) -> mi >= index end)
+                  count_old <= (state.servers |> length() |> div(2)) && count_new <= (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) && index
+                else
+                  ## including me
+                  count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                  count <= (state.servers |> length() |> div(2)) && index
+                end
+            end)
+          |> (&(&1 - 1)).()
+        state = commit_logs(:leader, commitable_index, state)
         {:next_state, :leader, state}
       else
+        state =
+          state
+          |> put_in([:match_index, from], index)
+          |> put_in([:next_index, from], index + 1)
+        commitable_index =
+          state.commit_index
+          |> Stream.iterate(&(&1 + 1))
+          |> Enum.find_value(fn(index) ->
+                if state.c_old_new do
+                  ## including me
+                  count_old = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                  count_new = count_old + Enum.count(state.new_match_index, fn({_, mi}) -> mi >= index end)
+                  count_old <= (state.servers |> length() |> div(2)) && count_new <= (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) && index
+                else
+                  ## including me
+                  count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
+                  count <= (state.servers |> length() |> div(2)) && index
+                end
+            end)
+          |> (&(&1 - 1)).()
+        state = commit_logs(:leader, commitable_index, state)
         {:next_state, :leader, state}
       end
-    else
-      state =
-        state
-        |> put_in([:match_index, from], index)
-        |> put_in([:next_index, from], index + 1)
-      commitable_index =
-        state.commit_index
-        |> Stream.iterate(&(&1 + 1))
-        |> Enum.find_value(fn(index) ->
-              if state.c_old_new do
-                ## including me
-                count_old = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
-                count_new = count_old + Enum.count(state.new_match_index, fn({_, mi}) -> mi >= index end)
-                count_old <= (state.servers |> length() |> div(2)) && count_new <= (Enum.concat(state.servers, state.new_servers) |> length() |> div(2)) && index
-              else
-                ## including me
-                count = Enum.count(state.match_index, fn({_, mi}) -> mi >= index end) + 1
-                count <= (state.servers |> length() |> div(2)) && index
-              end
-          end)
-        |> (&(&1 - 1)).()
-      state = commit_logs(:leader, commitable_index, state)
-      {:next_state, :leader, state}
     end
   end
   def leader(_message, state) do
@@ -379,6 +395,14 @@ defmodule Rafute.Server do
       {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
       rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
       send_rpc(server, rpc)
+    end
+    if state.c_old_new do
+      for server <- state.new_servers, server != state.me do
+        next_index = state.next_index[server]
+        {entries, prev_log_index, prev_log_term} = get_entries_from(next_index, state)
+        rpc = %{rpc | entries: entries, prev_log_index: prev_log_index, prev_log_term: prev_log_term}
+        send_rpc(server, rpc)
+      end
     end
     state = set_heartbeat_timer(state)
     {:next_state, :leader, state}
