@@ -255,11 +255,11 @@ defmodule Rafute.Server do
           send_rpc(server, rpc)
         end
         state = %{state | copy_index: 0, new_copy_index: 0}
-        Process.sleep(1000)
         state = set_heartbeat_timer(state)
         {:next_state, :leader, state}
       else
         state = %{state | new_copy_index: new_copy_index}
+        state = set_heartbeat_timer(state)
         {:next_state, :leader, state}
       end
     else
