@@ -17,4 +17,8 @@ defmodule Rafute.Backend.Agent do
   def exec(%Command{type: :c_old_new, args: {_servers, _new_servers}}, _pid) do
     :ok
   end
+
+  def exec(%Command{type: :c_new, args: {_servers, _new_servers}}, _pid) do
+    :ok
+  end
 end
